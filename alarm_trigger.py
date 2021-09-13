@@ -1,142 +1,21 @@
-from os import system
-system('pip install --upgrade pip')
-from keep_alive import keep_alive
-from datetime import datetime, timedelta
-import time
-import ccxt
-import pandas as pd
-import smtplib
-from ta.volatility import AverageTrueRange, BollingerBands, DonchianChannel, KeltnerChannel, UlcerIndex
+from ohlc import fetch_cryptodata_from_exchange
+from aux import read_csv_to_df
+from ta.volume import AccDistIndexIndicator, ChaikinMoneyFlowIndicator, EaseOfMovementIndicator, ForceIndexIndicator, \
+    MFIIndicator, OnBalanceVolumeIndicator, VolumePriceTrendIndicator
+from ta.trend import MACD, ADXIndicator, AroonIndicator, CCIIndicator, DPOIndicator, WMAIndicator, IchimokuIndicator, \
+    KSTIndicator, MassIndex, STCIndicator, TRIXIndicator, VortexIndicator
 from ta.momentum import RSIIndicator, StochRSIIndicator, TSIIndicator, UltimateOscillator, StochasticOscillator, \
     KAMAIndicator, ROCIndicator, AwesomeOscillatorIndicator, WilliamsRIndicator, PercentagePriceOscillator, \
     PercentageVolumeOscillator
-from ta.trend import MACD, ADXIndicator, AroonIndicator, CCIIndicator, DPOIndicator, WMAIndicator, IchimokuIndicator, \
-    KSTIndicator, MassIndex, STCIndicator, TRIXIndicator, VortexIndicator
-from ta.volume import AccDistIndexIndicator, ChaikinMoneyFlowIndicator, EaseOfMovementIndicator, ForceIndexIndicator, \
-    MFIIndicator, OnBalanceVolumeIndicator, VolumePriceTrendIndicator
-
-
-def retry_fetch_ohlcv(exchange, max_retries, symbol, timeframe, since, limit):
-    num_retries = 0
-    try:
-        num_retries += 1
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, since, limit)
-        # print('Fetched', len(ohlcv), symbol, 'candles from', exchange.iso8601 (ohlcv[0][0]), 'to', exchange.iso8601 (ohlcv[-1][0]))
-        return ohlcv
-    except Exception:
-        if num_retries > max_retries:
-            raise  # Exception('Failed to fetch', timeframe, symbol, 'OHLCV in', max_retries, 'attempts')
-
-
-def scrape_ohlcv(exchange, max_retries, symbol, timeframe, since, limit):
-    earliest_timestamp = exchange.milliseconds()
-    timeframe_duration_in_seconds = exchange.parse_timeframe(timeframe)
-    timeframe_duration_in_ms = timeframe_duration_in_seconds * 1000
-    timedelta = limit * timeframe_duration_in_ms
-    all_ohlcv = []
-    while True:
-        fetch_since = earliest_timestamp - timedelta
-        ohlcv = retry_fetch_ohlcv(exchange, max_retries, symbol, timeframe,
-                                  fetch_since, limit)
-        # if we have reached the beginning of history
-        if ohlcv[0][0] >= earliest_timestamp:
-            break
-        earliest_timestamp = ohlcv[0][0]
-        all_ohlcv = ohlcv + all_ohlcv
-        # print(len(all_ohlcv), 'candles in total from', exchange.iso8601(all_ohlcv[0][0]), 'to', exchange.iso8601(all_ohlcv[-1][0]))
-        # if we have reached the checkpoint
-        if fetch_since < since:
-            break
-    return exchange.filter_by_since_limit(all_ohlcv, since, None, key=0)
-
-
-def scrape_candles_to_csv(filename, exchange_id, max_retries, symbol,
-                          timeframe, since, limit):
-    # instantiate the exchange by id
-    exchange = getattr(ccxt, exchange_id)({
-        'enableRateLimit': True,
-    })
-    # convert since from string to milliseconds integer if needed
-    if isinstance(since, str):
-        since = exchange.parse8601(since)
-    # preload all markets from the exchange
-    exchange.load_markets()
-    # fetch all candles
-    ohlcv = scrape_ohlcv(exchange, max_retries, symbol, timeframe, since,
-                         limit)
-    # Creates Dataframe and save it to csv file
-    read_file = f'{filename}'
-    pd.DataFrame(ohlcv).to_csv(read_file)
-    # print('Saved', len(ohlcv), 'candles from', exchange.iso8601(ohlcv[0][0]), 'to', exchange.iso8601(ohlcv[-1][0]), 'to', filename)
-
-
-def fetch_data(loc_folder,
-               exchange='binance',
-               cryptos=['BTC/USDT'],
-               sample_freq='1d',
-               since_hours=48,
-               page_limit=1000):
-    datetime_now = datetime.now().strftime('%Y-%m-%d')
-    since = (datetime.today() - timedelta(hours=since_hours) -
-             timedelta(hours=3)).strftime('%Y-%m-%dT%H:%M:%S')
-    print('Begin download...')
-
-    for market_symbol in cryptos:
-        scrape_candles_to_csv(filename='test.csv',
-                              exchange_id=exchange,
-                              max_retries=3,
-                              symbol=market_symbol,
-                              timeframe=sample_freq,
-                              since=since,
-                              limit=page_limit)
-        time.sleep(2)
-        filename = 'test.csv'
-        df = pd.read_csv(filename)
-        if market_symbol == cryptos[0]:
-
-            df.drop(df.columns[[0]], axis=1, inplace=True)
-            df['0'] = pd.to_datetime(df['0'], unit='ms')
-            df.rename(columns={
-                '0': 'Datetime',
-                '1': 'Open',
-                '2': 'High',
-                '3': 'Low',
-                '4': 'Close',
-                '5': 'Volume'
-            },
-                inplace=True)
-            df = df.set_index('Datetime')
-            dfx = df.copy()
-
-        else:
-
-            df.drop(df.columns[[0]], axis=1, inplace=True)
-            df['0'] = pd.to_datetime(df['0'], unit='ms')
-            df.rename(columns={
-                '0': 'Datetime',
-                '1': 'Open',
-                '2': 'High',
-                '3': 'Low',
-                '4': 'Close',
-                '5': 'Volume'
-            },
-                inplace=True)
-            df = df.set_index('Datetime')
-            dfx = pd.merge(dfx, df, on=['Datetime'])
-
-    dfx = dfx.loc[:, ~dfx.columns.duplicated()]
-    dfx = dfx[~dfx.index.duplicated(keep='first')]
-    crypto = market_symbol.replace('/', '')
-
-    print(f'Finished \n')
-    # write_file = f'{loc_folder}/{crypto}-{sample_freq}-Alarm Price Data.csv'
-    return dfx
-
-
-def import_csv(loc_folder, filename):
-    read_file = f'{loc_folder}/{filename}'
-    df = pd.read_csv(read_file, index_col='Datetime', parse_dates=True)
-    return df
+from ta.volatility import AverageTrueRange, BollingerBands, DonchianChannel, KeltnerChannel, UlcerIndex
+import smtplib
+import pandas as pd
+import ccxt
+import time
+from datetime import datetime, timedelta
+from keep_alive import keep_alive
+from os import system
+system('pip install --upgrade pip')
 
 
 def get_psar(df, iaf=0.02, maxaf=0.2):
@@ -928,11 +807,11 @@ def signal(coin, type):
             print(f'{coin} {type} Alarm Triggered - Email Sent')
     except:
         print('Something went wrong...')
-
-
 #                   -------- Binance Historical OHLC Import Tool -------
 
-cryptos = ['BTC/BUSD', 'ETH/BUSD', 'AVAX/BUSD', 'BNB/BUSD', 'SOL/BUSD', 'LUNA/BUSD', 'ADA/BUSD']
+
+cryptos = ['BTC/BUSD', 'ETH/BUSD', 'AVAX/BUSD',
+           'BNB/BUSD', 'SOL/BUSD', 'LUNA/BUSD', 'ADA/BUSD']
 sample_freq = '1m'
 since = 200  # Expressed in hours
 #loc_folder = 'C:/Users/USER/PycharmProjects/pythonProject/'
@@ -944,115 +823,7 @@ for x in range(len(cryptos)):
     for y in range(len(t_list)):
         file_n = f'TA Results {cryptos[x].replace("/", "")} - {t_list[y]} 0.7.csv'
         dt = pd.read_csv(f'{loc_folder}{file_n}')
-        dt = dt.astype({
-            'sma_w': int,
-            'ema_w': int,
-            'wma_w': int,
-            'adi_fw': int,
-            'adi_sw': int,
-            'adi_sg': int,
-            'adx_w': int,
-            'adx_l': int,
-            'ai_w': int,
-            'ao_1': int,
-            'ao_2': int,
-            'atr_w': int,
-            'atr_l': int,
-            'bb_w': int,
-            'bb_d': int,
-            'bb_l': int,
-            'cci_w': int,
-            'cci_b': int,
-            'cci_s': int,
-            'cmf_w': int,
-            'dc_w': int,
-            'dc_l': int,
-            'dpo_w': int,
-            'dpo_s': int,
-            'eom_w': int,
-            'eom_sma': int,
-            'eom_b': int,
-            'eom_s': int,
-            'fi_w': int,
-            'fi_b': int,
-            'fi_s': int,
-            'ii_1': int,
-            'ii_2': int,
-            'ii_3': int,
-            'kc_w': int,
-            'kc_a': int,
-            'ki_w': int,
-            'ki_p1': int,
-            'ki_p2': int,
-            'ki_p3': int,
-            'kst_1': int,
-            'kst_2': int,
-            'kst_3': int,
-            'kst_4': int,
-            'kst_ns': int,
-            'kst_r1': int,
-            'kst_r2': int,
-            'kst_r3': int,
-            'kst_r4': int,
-            'kst_b': int,
-            'kst_s': int,
-            'macd_fw': int,
-            'macd_sw': int,
-            'macd_sg': int,
-            'mfi_w': int,
-            'mfi_b': int,
-            'mfi_s': int,
-            'mi_fw': int,
-            'mi_sw': int,
-            'obv_fw': int,
-            'obv_sw': int,
-            'obv_sg': int,
-            'po_sw': int,
-            'po_fw': int,
-            'po_sg': int,
-            'pvo_sw': int,
-            'pvo_fw': int,
-            'pvo_sg': int,
-            'roc_w': int,
-            'roc_b': int,
-            'roc_s': int,
-            'rsi_w': int,
-            'rsi_b': int,
-            'rsi_s': int,
-            'so_w': int,
-            'so_sw': int,
-            'so_b': int,
-            'so_s': int,
-            'srsi_w': int,
-            'srsi_kw': int,
-            'srsi_dw': int,
-            'stc_fw': int,
-            'stc_sw': int,
-            'stc_c': int,
-            'stc_s1': int,
-            'stc_s2': int,
-            'stc_hl': int,
-            'stc_ll': int,
-            'trix_w': int,
-            'trix_sw': int,
-            'tsi_fw': int,
-            'tsi_sw': int,
-            'tsi_sig': int,
-            'tsi_s': int,
-            'ui_w': int,
-            'ui_b': int,
-            'ui_s': int,
-            'uo_1': int,
-            'uo_2': int,
-            'uo_3': int,
-            'uo_b': int,
-            'uo_s': int,
-            'vi_w': int,
-            'vpt_sma': int,
-            'wi_w': int,
-            'wi_b': int,
-            'wi_s': int
-        })
+        dt = dt.astype(ASTYPE_DICT)
         dt = dt.join(dt['adx_l'].rename('vpt_adx'))
         dt = dt.join(dt['std_m'].rename('mi_std'))
         dt = dt.join(dt['std_m'].rename('fi_std'))
@@ -1091,7 +862,8 @@ for x in range(len(cryptos)):
             a_list.pop()
             e_list.pop()
 
-        score_list = [(a_list[x] - a_list[-1])*(0.1*e_list[x])+e_list[x] for x in range(len(e_list))]
+        score_list = [(a_list[x] - a_list[-1])*(0.1*e_list[x])+e_list[x]
+                      for x in range(len(e_list))]
         idx_max = a_idx[score_list.index(max(score_list))]
 
         zone = dt.loc[idx_max][8]
@@ -1138,14 +910,14 @@ while True:
             n = -1
             cdf = pd.DataFrame([0 for x in range(len(t_list))])
             print(cryptos[x])
-            dfx = fetch_data(loc_folder,
-                            exchange='binance',
-                            cryptos=[cryptos[x]],
-                            sample_freq=sample_freq,
-                            since_hours=since,
-                            page_limit=1000)
+            dfx = fetch_cryptodata_from_exchange(loc_folder,
+                                                 exchange='binance',
+                                                 cryptos=[cryptos[x]],
+                                                 sample_freq=sample_freq,
+                                                 since_hours=since,
+                                                 page_limit=1000)
 
-            print(f'{cryptos[x]} Dasaset Span: {int(len(dfx))/ 60} hours')
+            print(f'{cryptos[x]} Dataset Span: {int(len(dfx))/ 60} hours')
 
             for y in range(len(t_list)):
                 if t_list[y] != '1min':
@@ -1171,7 +943,7 @@ while True:
                     cdf.iloc[n] = 1
                 elif df.iloc[-1].sum() == -len(df.columns):
                     cdf.iloc[n] = -1
-            
+
             if int(cdf.sum()) == -len(t_list) and s_list[x] == 0:
                 signal(cryptos[x], 'Buy')
                 print(f'{cryptos[x]} Buy Alarm Triggered')
@@ -1183,5 +955,5 @@ while True:
 
         time.sleep(900)
     except:
-      time.sleep(900)
-      continue
+        time.sleep(900)
+        continue
